@@ -50,6 +50,8 @@ export function YouTubePlayer({ videoId, step, onTimeUpdate }: PlayerProps) {
   stepRef.current = step;
   const loopRef = useRef(loopStep);
   loopRef.current = loopStep;
+  /** último seek programático (ms) — guarda anti-oscilación del loop */
+  const seekAtRef = useRef(0);
 
   // init player
   useEffect(() => {
@@ -72,12 +74,10 @@ export function YouTubePlayer({ videoId, step, onTimeUpdate }: PlayerProps) {
         },
         events: {
           onReady: () => setReady(true),
-          onStateChange: (e: any) => {
-            if (e.data === 1) {
-              // playing
-              if (stepRef.current) playerRef.current?.seekTo(stepRef.current.startTs, true);
-            }
-          },
+          // IMPORTANTE: no hacer seek en onStateChange(PLAYING). Cada seekTo
+          // provoca un nuevo evento PLAYING; re-seekear ahí creaba un bucle
+          // infinito de ~1s (el video no avanzaba). El seek por paso lo
+          // hace el effect de "seek al cambiar de paso".
         },
       });
       tick = setInterval(() => {
@@ -86,10 +86,17 @@ export function YouTubePlayer({ videoId, step, onTimeUpdate }: PlayerProps) {
         const t = p.getCurrentTime();
         setCurrent(t);
         onTimeUpdate?.(t);
-        // loop de paso
+        // loop de paso — con guarda anti-oscilación:
+        // no re-seek hasta 1.5s después del último seek (el seekTo de
+        // YouTube puede reportar tiempo inconsistente durante ~1s, y
+        // re-seekear en cada tick generaba el "loop de 1s" del bug).
         const s = stepRef.current;
         if (loopRef.current && s && t >= s.endTs) {
-          p.seekTo(s.startTs, true);
+          const now = Date.now();
+          if (now - seekAtRef.current > 1500) {
+            seekAtRef.current = now;
+            p.seekTo(s.startTs, true);
+          }
         }
       }, 250);
     });
@@ -106,7 +113,10 @@ export function YouTubePlayer({ videoId, step, onTimeUpdate }: PlayerProps) {
   // seek al cambiar de paso
   useEffect(() => {
     if (!ready) return;
-    if (step) playerRef.current?.seekTo(step.startTs, true);
+    if (step) {
+      seekAtRef.current = Date.now();
+      playerRef.current?.seekTo(step.startTs, true);
+    }
   }, [step, ready]);
 
   const changeSpeed = (s: number) => {
@@ -116,6 +126,7 @@ export function YouTubePlayer({ videoId, step, onTimeUpdate }: PlayerProps) {
 
   const practiceStep = () => {
     if (!step) return;
+    seekAtRef.current = Date.now();
     playerRef.current?.seekTo(step.startTs, true);
     playerRef.current?.playVideo();
     setLoopStep(true);
